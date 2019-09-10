@@ -1,0 +1,27 @@
+stages:
+  - test
+
+# PlatformIO works badly on Alpine Linux, so using an Ubuntu image here.
+image: ubuntu:18.04
+
+variables:
+  GIT_SUBMODULE_STRATEGY: normal
+
+before_script:
+  - apt-get update
+  - apt-get install python3 --yes
+  - apt-get install python-pip --yes
+  - pip2 install platformio
+
+compile arduino due:
+  stage: test
+
+  # Performs the setup, sets up the generated files for PlatformIO. Then tries
+  # to compile for Arduino Due.
+  script:
+    - python3 setup.py
+    - cd target/obcsim
+    - mkdir src
+    - mv *.h *.hpp *.c *.cpp *.ino src/
+    - echo -e "[env:due]\nplatform = atmelsam\nboard = due\nframework = arduino" > platformio.ini
+    - platformio run

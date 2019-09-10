@@ -1,0 +1,55 @@
+stages:
+  - test
+  - documentation
+
+
+run test suite:
+  stage: test
+  image: alpine:3.8
+
+  before_script:
+    - apk add python
+    - apk add make
+    - apk add gcc
+    - apk add libc-dev
+    
+  script:
+    - cd tests
+    - make test
+
+run 32-bit test suite:
+  stage: test
+  image: i386/alpine:3.8
+  when: manual
+  allow_failure: false
+
+  before_script:
+    - apk add python
+    - apk add make
+    - apk add gcc
+    - apk add libc-dev
+
+  script:
+    - cd tests
+    - make test32
+
+
+pages:
+  stage: documentation
+  image: alpine:3.8
+
+  before_script:
+    - apk add doxygen
+
+  script:
+    - cd docs
+    - doxygen Doxyfile
+    - mv html/ ../public/
+
+  artifacts:
+    paths:
+      - public
+
+  only:
+    - master
+

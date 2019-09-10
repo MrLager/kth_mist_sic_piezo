@@ -1,0 +1,183 @@
+#!/usr/bin/python
+
+import argparse
+import os
+import shutil
+import sys
+
+def msp_addr_type(x):
+	try:
+		addr = str.lower(x)
+		assert len(addr) == 4
+		assert addr[0:2] == "0x"
+		assert addr[2] in "01234567"
+		assert addr[3] in "0123456789abcdef"
+	except Exception:
+		raise argparse.ArgumentTypeError("invalid address format")
+	return addr
+
+def msp_mtu_type(x):
+	try:
+		mtu = int(x)
+		assert mtu >= 4
+	except Exception:
+		raise argparse.ArgumentTypeError("MTU must be an integer at least 4 in size")
+	return mtu
+
+# State requirements for obc and experiment
+OBC_REQUIRED = []
+OBC_INCOMPATIBLE = ['addr', 'mtu']
+OBC_DRIVERS = {'uno', 'due', 'iobc'}
+EXPERIMENT_REQUIRED = ['addr', 'mtu']
+EXPERIMENT_INCOMPATIBLE = []
+EXPERIMENT_DRIVERS = {'uno', 'due'}
+
+# args should be of type argparse.Namespace with the following attributes:
+#  - mode: The string 'obc' or 'experiment'
+#  - lowmem: bool
+#  - driver: str.lower or None
+#  - mtu: int or None
+#  - addr: str.lower or None
+def main(args):
+	obc_mode = (args.mode == 'obc')
+	experiment_mode = (args.mode == 'experiment')
+
+	# Do some sanity checks for required/incompatible arguments
+	passed_all_checks = True
+	if obc_mode:
+		for req in OBC_REQUIRED:
+			if args.__dict__[req] is None:
+				print("error: argument --%s is required if MSP is configured in OBC mode" % req)
+				passed_all_checks = False
+		for incomp in OBC_INCOMPATIBLE:
+			if args.__dict__[incomp] is not None:
+				print("error: argument --%s is not allowed if MSP is configured in OBC mode" % incomp)
+				passed_all_checks = False
+		if (args.driver is not None) and (args.driver not in OBC_DRIVERS):
+			print("error: specified driver is not available in OBC mode. Available drivers: {%s}" % (",".join(OBC_DRIVERS)))
+			passed_all_checks = False
+	elif experiment_mode:
+		for req in EXPERIMENT_REQUIRED:
+			if args.__dict__[req] is None:
+				print("error: argument --%s is required if MSP is configured in experiment mode" % req)
+				passed_all_checks = False
+		for incomp in EXPERIMENT_INCOMPATIBLE:
+			if args.__dict__[incomp] is not None:
+				print("error: argument --%s is not allowed if MSP is configured in experiment mode" % incomp)
+				passed_all_checks = False
+		if (args.driver is not None) and (args.driver not in EXPERIMENT_DRIVERS):
+			print("error: specified driver is not available in experiment mode. Available drivers: {%s}" % (",".join(EXPERIMENT_DRIVERS)))
+			passed_all_checks = False
+	else:
+		print("error: invalid mode")
+		passed_all_checks = False
+
+	# Check formatting of args.mtu and args.addr
+	try:
+		if args.mtu is not None:
+			msp_mtu_type(args.mtu)
+	except argparse.ArgumentTypeError as e:
+		print("error: %s" % str(e))
+		passed_all_checks = False
+	try:
+		if args.addr is not None:
+			msp_addr_type(args.addr)
+	except argparse.ArgumentTypeError as e:
+		print("error: %s" % str(e))
+		passed_all_checks = False
+
+	if not passed_all_checks:
+		sys.exit(1)
+
+
+	msp_root = os.path.dirname(os.path.realpath(__file__))
+	target_path = os.path.join(msp_root, 'target')
+	if 'target' in os.listdir(msp_root):
+		shutil.rmtree(target_path)
+	os.makedirs(target_path)
+
+	src_path = os.path.join(msp_root, 'src')
+	common_path = os.path.join(src_path, 'common')
+	driver_path = os.path.join(src_path, 'driver')
+	experiment_path = os.path.join(src_path, 'experiment')
+	obc_path = os.path.join(src_path, 'obc')
+
+	# Copy the common files and generate the configuration header
+	copy_from(common_path, target_path)
+	conf_header = generate_configuration_header(args)
+	with open(os.path.join(target_path, 'msp_configuration.h'), 'w+') as f:
+		f.write(conf_header)
+
+	if experiment_mode:
+		copy_from(experiment_path, target_path)
+		if args.driver == 'uno':
+			copy_from(driver_path, target_path, ['msp_i2c_slave.h', 'msp_i2c_slave_uno.c', 'msp_i2c_common_uno.h'])
+		elif args.driver == 'due':
+			copy_from(driver_path, target_path, ['msp_i2c_slave.h', 'msp_i2c_slave_due.c', 'msp_i2c_common_due.h'])
+	elif obc_mode:
+		copy_from(obc_path, target_path)
+		if args.driver == 'uno':
+			copy_from(driver_path, target_path, ['msp_i2c_master.h', 'msp_i2c_master_uno.c', 'msp_i2c_common_uno.h'])
+		elif args.driver == 'due':
+			copy_from(driver_path, target_path, ['msp_i2c_master.h', 'msp_i2c_master_due.c', 'msp_i2c_common_due.h'])
+		elif args.driver == 'iobc':
+			copy_from(driver_path, target_path, ['msp_i2c_master.h', 'msp_i2c_master_iobc.c'])
+		else:
+			copy_from(driver_path, target_path, ['msp_i2c_master.h', 'msp_i2c_master_template.c'])
+
+
+# Helper function for copying all files from src into dst
+def copy_from(src, dst, files=[]):
+	if len(files) == 0:
+		files = os.listdir(src)
+
+	for fname in files:
+		fpath = os.path.join(src, fname)
+		tpath = os.path.join(dst, fname)
+		if os.path.isfile(fpath):
+			shutil.copyfile(fpath, tpath)
+
+# Generates the text for the msp_configuration.h header
+def generate_configuration_header(args):
+	contents =  '/*\n'
+	contents += ' * This header is automatically generated by the configuation\n'
+	contents += ' * script. Please use the configuation script instead of editing\n'
+	contents += ' * this file directly.\n'
+	contents += ' */\n\n'
+	contents += '#ifndef MSP_CONFIGURATION_H\n'
+	contents += '#define MSP_CONFIGURATION_H\n\n'
+	if args.lowmem:
+		contents += '#define MSP_LOW_MEMORY\n'
+	if args.mtu is not None:
+		contents += '#define MSP_EXP_MTU %d\n' % (args.mtu)
+	if args.addr is not None:
+		contents += '#define MSP_EXP_ADDR %s\n' % (args.addr)
+
+	contents += '\n#endif\n'
+	return contents
+
+
+if __name__ == '__main__':
+	parser = argparse.ArgumentParser(description='Configure script for the MSP driver.')
+	parser.add_argument('mode', metavar='MODE', type=str.lower, default=None,
+	                    choices={'obc', 'experiment'},
+	                    help='Configures MSP for the specified mode. Options: {obc,experiment}')
+	parser.add_argument('--lowmem', dest='lowmem', action='store_const',
+	                    const=True, default=False,
+	                    help='Configures the MSP driver to use less memory (no lookup'
+	                         ' tables etc.)')
+	parser.add_argument('--driver', dest='driver', type=str.lower, default=None, choices=OBC_DRIVERS | EXPERIMENT_DRIVERS,
+	                    help='Includes an I2C driver for the specified platform. If MSP is'
+	                         ' configured in OBC mode and this is not specified, a template file'
+	                         ' for an I2C driver will be included instead.')
+	parser.add_argument('--mtu', dest='mtu', type=msp_mtu_type, default=None,
+	                    help='Specifies the MTU. Must be present if and only if MSP is configured'
+	                         ' in experiment mode.')
+	parser.add_argument('--addr', dest='addr', type=msp_addr_type, default=None,
+	                    help='Specifies the address for the experiment. Argument must be formatted'
+	                         ' as a 2-digit hexadecimal number (e.g. 0x3C). Must be present if and'
+	                         ' only if MSP is configured in experiment mode.')
+	args = parser.parse_args()
+
+	main(args)
+
